@@ -1,13 +1,13 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Geeta Tech Hub — News Widget</title>
   <style>
     :root{--gth-accent:#ff5b60;--gth-bg:#fff;--gth-muted:#777;--gth-radius:12px}
     html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;}
-    .gth-wrap{max-width:980px;margin:8px auto;padding:12px}
+    .gth-wrap{max-width:980px;margin:12px auto;padding:12px}
     .gth-card{background:var(--gth-bg);border-radius:var(--gth-radius);box-shadow:0 8px 24px rgba(12,14,20,.06);overflow:hidden}
     .gth-header{display:flex;justify-content:space-between;align-items:center;padding:14px 16px}
     .gth-title{font-weight:700;font-size:18px;color:#111}
@@ -30,6 +30,7 @@
     .gth-sm .s{font-size:12px;color:var(--gth-muted);line-height:1.2}
     .gth-footer{padding:10px 14px;font-size:12px;color:var(--gth-muted);text-align:right}
     .gth-loading{padding:24px;text-align:center;color:var(--gth-muted)}
+    .gth-error{padding:20px;text-align:center;color:#b00020}
     @media (max-width:720px){
       .gth-featured{flex-direction:column}
       .gth-featured .img{width:100%;height:180px}
@@ -48,118 +49,157 @@
       </div>
 
       <div id="gth-content" class="gth-layout">
-        <div class="gth-loading">Loading headlines…</div>
+        <div id="gth-loading" class="gth-loading">Loading headlines…</div>
       </div>
     </div>
   </div>
 
 <script>
-(function(){
-  // CONFIG
-  const country = 'IN';        // change to desired country code (e.g., 'US','GB')
-  const smallCount = 4;        // number of small cards
-  const rss2jsonBase = 'https://api.rss2json.com/v1/api.json?rss_url=';
+/*
+  Improved client-side RSS fetcher using allorigins (CORS proxy) + XML parsing.
+  - avoids rss2json rate issues
+  - extracts images from <media:content>, <enclosure>, or first <img> in description/content
+*/
+(async function(){
+  const country = 'IN';        // change if needed
+  const smallCount = 4;
   const newsRSS = `https://news.google.com/rss?hl=en-${country}&gl=${country}&ceid=${country}:en`;
   const trendsRSS = `https://trends.google.com/trends/trendingsearches/daily/rss?geo=${country}`;
+  const allOrigins = url => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url);
 
-  // helpers
-  const root = document.getElementById('gth-content');
+  const $content = document.getElementById('gth-content');
+  const $loading = document.getElementById('gth-loading');
+
   function stripHtml(html){ if(!html) return ''; const d=document.createElement('div'); d.innerHTML = html; return d.textContent||d.innerText||''; }
-  function extractImage(it){
-    if(it.thumbnail) return it.thumbnail;
-    if(it.enclosure && it.enclosure.link) return it.enclosure.link;
-    const m1= /<img[^>]+src="([^">]+)"/i.exec(it.content||''); if(m1) return m1[1];
-    const m2= /<img[^>]+src="([^">]+)"/i.exec(it.description||''); if(m2) return m2[1];
-    return '';
-  }
-  function shortify(text,lim=140){ if(!text) return ''; text = stripHtml(text).replace(/\s+/g,' ').trim(); if(text.length<=lim) return text; const s = text.slice(0,lim); const last = Math.max(s.lastIndexOf('.'), s.lastIndexOf('!'), s.lastIndexOf('?')); return (last>30 ? s.slice(0,last+1) : s.trim() + '…'); }
-  function catchy(title,desc){ const d = shortify(desc,160); const templates = [ `${title} — quick take: ${d}`, `Why it matters: ${d}`, `${title} — in brief: ${d}`, `Snapshot: ${d}` ]; return templates[Math.floor(Math.random()*templates.length)]; }
+  function shortify(text,lim=140){ if(!text) return ''; text = stripHtml(text).replace(/\s+/g,' ').trim(); if(text.length<=lim) return text; const s=text.slice(0,lim); const last=Math.max(s.lastIndexOf('.'),s.lastIndexOf('!'),s.lastIndexOf('?')); return (last>30? s.slice(0,last+1): s.trim()+'…'); }
+  function catchy(title,desc){ const d=shortify(desc,160); const t=[`${title} — quick take: ${d}`,'Why it matters: '+d,`${title} — in brief: ${d}`,'Snapshot: '+d]; return t[Math.floor(Math.random()*t.length)]; }
   function escapeHtml(s){ if(!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
-  async function fetchJson(rssUrl){
+  // parse RSS XML string -> array of items
+  function parseRSS(xmlString){
     try{
-      const r = await fetch(rss2jsonBase + encodeURIComponent(rssUrl));
-      if(!r.ok) throw new Error('Network error');
-      return await r.json();
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(xmlString, "application/xml");
+      const items = Array.from(doc.querySelectorAll('item')).map(it=>{
+        const title = it.querySelector('title') ? it.querySelector('title').textContent : '';
+        const link = it.querySelector('link') ? it.querySelector('link').textContent : (it.querySelector('guid')?it.querySelector('guid').textContent:'#');
+        const description = it.querySelector('description') ? it.querySelector('description').textContent : '';
+        const content = (it.querySelector('content\\:encoded') ? it.querySelector('content\\:encoded').textContent : '') || description;
+        const pubDate = it.querySelector('pubDate') ? it.querySelector('pubDate').textContent : '';
+        // media:content or enclosure
+        let image = '';
+        const m = it.querySelector('media\\:content, media\\:thumbnail');
+        if(m && m.getAttribute('url')) image = m.getAttribute('url');
+        if(!image){
+          const encl = it.querySelector('enclosure');
+          if(encl && encl.getAttribute('url')) image = encl.getAttribute('url');
+        }
+        // fallback: first img in content/description
+        if(!image){
+          const re = /<img[^>]+src=["']?([^"'>\s]+)["']?/i;
+          const mm = re.exec(content || description || '');
+          if(mm) image = mm[1];
+        }
+        return { title, link, content, description, pubDate, image };
+      });
+      return items;
     }catch(e){
-      console.warn('rss fetch failed', e);
-      return null;
+      console.warn('XML parse error', e);
+      return [];
     }
   }
 
-  (async function render(){
-    root.innerHTML = '<div class="gth-loading">Loading headlines…</div>';
-    const [newsJson, trendsJson] = await Promise.all([ fetchJson(newsRSS), fetchJson(trendsRSS) ]);
-    const items = [];
+  async function fetchText(url){
+    try{
+      const res = await fetch(allOrigins(url), {cache: 'no-cache'});
+      if(!res.ok) throw new Error('Network response not ok: ' + res.status);
+      const txt = await res.text();
+      return txt;
+    }catch(e){
+      console.warn('fetchText error', e);
+      throw e;
+    }
+  }
 
-    if(newsJson && newsJson.items){
-      for(const it of newsJson.items){
-        items.push({
-          title: it.title,
-          link: it.link,
-          content: it.content || it.description,
-          pubDate: it.pubDate,
-          source: newsJson.feed && newsJson.feed.title,
-          image: extractImage(it)
-        });
+  // Try both feeds and merge items
+  async function loadFeeds(){
+    $loading.textContent = 'Loading headlines…';
+    try{
+      // fetch news and trends in parallel
+      const [newsText, trendsText] = await Promise.all([ fetchText(newsRSS), fetchText(trendsRSS) ]);
+      const newsItems = parseRSS(newsText);
+      const trendsItems = parseRSS(trendsText);
+
+      // annotate source if available (feed-level title)
+      // attempt to extract feed title from news XML
+      // (simple extraction)
+      const feedTitleMatch = /<title>([^<]+)<\/title>/i.exec(newsText);
+      const newsFeedTitle = feedTitleMatch ? feedTitleMatch[1] : 'Google News';
+
+      const items = [];
+
+      for(const it of newsItems){
+        items.push(Object.assign({}, it, { source: newsFeedTitle }));
       }
-    }
-    if(trendsJson && trendsJson.items){
-      for(const it of trendsJson.items){
-        items.push({
-          title: it.title,
-          link: it.link || '#',
-          content: it.description || '',
-          pubDate: it.pubDate,
-          source: trendsJson.feed && trendsJson.feed.title,
-          image: ''
-        });
+      for(const it of trendsItems){
+        items.push(Object.assign({}, it, { source: 'Google Trends' }));
       }
+
+      if(!items.length){
+        $content.innerHTML = '<div class="gth-error">No items found — try again later.</div>';
+        return;
+      }
+
+      // sort by pubDate if present
+      items.sort((a,b)=>{
+        const ta = a.pubDate ? new Date(a.pubDate).getTime() : 0;
+        const tb = b.pubDate ? new Date(b.pubDate).getTime() : 0;
+        return tb - ta;
+      });
+
+      renderItems(items);
+    }catch(err){
+      console.error('Error loading feeds', err);
+      $content.innerHTML = '<div class="gth-error">Failed to load feeds. Open browser console for details.</div>';
     }
+  }
 
-    if(items.length === 0){
-      root.innerHTML = '<div class="gth-loading">No items available right now.</div>';
-      return;
-    }
-
-    // sort by newest first
-    items.sort((a,b)=>{
-      const ta = a.pubDate ? new Date(a.pubDate).getTime() : 0;
-      const tb = b.pubDate ? new Date(b.pubDate).getTime() : 0;
-      return tb - ta;
-    });
-
+  function renderItems(items){
     const featured = items[0];
     const smalls = items.slice(1, 1 + smallCount);
 
-    // build markup
-    let html = '';
-    html += '<div class="gth-featured">';
-    if(featured.image){
-      html += `<div class="img"><a href="${featured.link}" target="_blank" rel="noopener noreferrer"><img alt="${escapeHtml(featured.title)}" src="${featured.image}"></a></div>`;
+    const fImg = featured.image || '';
+    let html = '<div class="gth-featured">';
+    if(fImg){
+      html += `<div class="img"><a href="${featured.link}" target="_blank" rel="noopener noreferrer"><img alt="${escapeHtml(featured.title)}" src="${escapeHtml(fImg)}"></a></div>`;
     } else {
       html += `<div class="img"><a href="${featured.link}" target="_blank" rel="noopener noreferrer"><img alt="${escapeHtml(featured.title)}" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='480'><rect width='100%' height='100%' fill='%23f3f3f3'/><text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' fill='%23999' font-size='20'>No image</text></svg>"></a></div>`;
     }
     html += '<div class="meta">';
     html += `<div class="headline"><a href="${featured.link}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;color:inherit">${escapeHtml(featured.title)}</a></div>`;
-    html += `<div class="syn">${escapeHtml(catchy(featured.title, featured.content || ''))}</div>`;
+    html += `<div class="syn">${escapeHtml(catchy(featured.title, featured.content || featured.description || ''))}</div>`;
     html += `<div class="meta-row"><div class="gth-src">${escapeHtml(featured.source||'')}</div><div><a class="read" href="${featured.link}" target="_blank" rel="noopener noreferrer">Read full</a></div></div>`;
     html += '</div></div>';
 
     // small grid
     html += '<div class="gth-sm-grid">';
     for(const s of smalls){
+      const si = s.image || '';
       html += '<div class="gth-sm">';
-      html += `<div class="thumb"><a href="${s.link}" target="_blank" rel="noopener noreferrer"><img src="${s.image || 'data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'200\\' height=\\'120\\'><rect width=\\'100%\\' height=\\'100%\\' fill=\\'%23f2f2f2\\'/><text x=\\'50%\\' y=\\'50%\\' dominant-baseline=\\'middle\\' text-anchor=\\'middle\\' fill=\\'%23999\\' font-size=\\'12\\'>No image</text></svg>'}" alt=""></a></div>`;
+      html += `<div class="thumb"><a href="${s.link}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(si || 'data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'200\\' height=\\'120\\'><rect width=\\'100%\\' height=\\'100%\\' fill=\\'%23f2f2f2\\'/><text x=\\'50%\\' y=\\'50%\\' dominant-baseline=\\'middle\\' text-anchor=\\'middle\\' fill=\\'%23999\\' font-size=\\'12\\'>No image</text></svg>')}\" alt=""></a></div>`;
       html += '<div class="info">';
       html += `<div class="h"><a href="${s.link}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;color:inherit">${escapeHtml(s.title)}</a></div>`;
-      html += `<div class="s">${escapeHtml(shortify(s.content||'',110))}</div>`;
+      html += `<div class="s">${escapeHtml(shortify(s.content||s.description||'',110))}</div>`;
       html += '</div></div>';
     }
-    html += '</div><div class="gth-footer">Powered by Google News & Trends</div>';
+    html += '</div>';
+    html += '<div class="gth-footer">Powered by Google News & Trends</div>';
 
-    root.innerHTML = html;
-  })();
+    $content.innerHTML = html;
+  }
+
+  // start
+  loadFeeds();
 
 })();
 </script>
