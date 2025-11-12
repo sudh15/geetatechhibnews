@@ -35,20 +35,17 @@
 </style>
 </head>
 <body>
-  <div class="gth-wrap">
-    <div id="gth-root" class="gth-card" aria-label="Geeta Tech Hub News Widget">
-      <div class="gth-header">
-        <div>
-          <div class="gth-title">Geeta Tech Hub News</div>
-          <div class="gth-sub">Google News + Trending searches • quick synopses</div>
-        </div>
-        <div class="gth-sub">Auto • Local</div>
-      </div>
-      <div id="gth-content" class="gth-layout">
-        <div id="gth-loading" class="gth-loading">Loading headlines…</div>
-      </div>
+<div class="gth-wrap">
+  <div id="gth-root" class="gth-card" aria-label="Geeta Tech Hub News Widget">
+    <div class="gth-header">
+      <div><div class="gth-title">Geeta Tech Hub News</div><div class="gth-sub">Google News + Trending searches • quick synopses</div></div>
+      <div class="gth-sub">Auto • Local</div>
+    </div>
+    <div id="gth-content" class="gth-layout">
+      <div id="gth-loading" class="gth-loading">Loading headlines…</div>
     </div>
   </div>
+</div>
 
 <script>
 (async function(){
@@ -56,185 +53,144 @@
   const smallCount = 4;
   const newsRSS = `https://news.google.com/rss?hl=en-${country}&gl=${country}&ceid=${country}:en`;
   const trendsRSS = `https://trends.google.com/trends/trendingsearches/daily/rss?geo=${country}`;
-  const proxy = url => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url);
+
+  // PROXY LIST - order matters; some return raw XML, rss2json returns JSON
+  const proxies = [
+    {name:'allorigins', url: u => 'https://api.allorigins.cf/raw?url=' + encodeURIComponent(u), type:'raw'},
+    {name:'allorigins.win', url: u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u), type:'raw'},
+    {name:'thingproxy', url: u => 'https://thingproxy.freeboard.io/fetch/' + u, type:'raw'},
+    {name:'rss2json', url: u => 'https://api.rss2json.com/v1/api.json?rss_url=' + encodeURIComponent(u), type:'rss2json'}
+  ];
 
   const contentEl = document.getElementById('gth-content');
   const loadingEl = document.getElementById('gth-loading');
 
-  function stripHtml(html){ if(!html) return ''; const d = document.createElement('div'); d.innerHTML = html; return d.textContent||d.innerText||''; }
-  function shortify(text, lim = 140){ if(!text) return ''; text = stripHtml(text).replace(/\s+/g,' ').trim(); if(text.length <= lim) return text; const s = text.slice(0, lim); const last = Math.max(s.lastIndexOf('.'), s.lastIndexOf('!'), s.lastIndexOf('?')); return last > 30 ? s.slice(0, last+1) : s + '…'; }
-  function catchy(title, desc){ const d = shortify(desc, 160); const arr = [title + ' — quick take: ' + d, 'Why it matters: ' + d, title + ' — in brief: ' + d, 'Snapshot: ' + d]; return arr[Math.floor(Math.random() * arr.length)]; }
+  function stripHtml(h){ if(!h) return ''; const d=document.createElement('div'); d.innerHTML=h; return d.textContent||d.innerText||''; }
+  function shortify(t,l=140){ if(!t) return ''; t=stripHtml(t).replace(/\s+/g,' ').trim(); if(t.length<=l) return t; const s=t.slice(0,l); const last=Math.max(s.lastIndexOf('.'),s.lastIndexOf('!'),s.lastIndexOf('?')); return last>30? s.slice(0,last+1) : s+'…'; }
+  function catchy(title,desc){ const d=shortify(desc,160); const templates=[title+' — quick take: '+d,'Why it matters: '+d,title+' — in brief: '+d,'Snapshot: '+d]; return templates[Math.floor(Math.random()*templates.length)]; }
   function escapeHtml(s){ if(!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  function fallbackSvgUrl(){ const svg="<svg xmlns='http://www.w3.org/2000/svg' width='200' height='120'><rect width='100%' height='100%' fill='%23f2f2f2'/><text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' fill='%23999' font-size='12'>No image</text></svg>"; return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg); }
 
-  // fallback SVG dataURL (encoded safely)
-  function fallbackSvgDataUrl(){
-    const svg = "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='120'><rect width='100%' height='100%' fill='%23f2f2f2'/><text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' fill='%23999' font-size='12'>No image</text></svg>";
-    return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+  // parse raw RSS XML items
+  function parseRawRSS(xmlStr){
+    try{
+      const doc = new DOMParser().parseFromString(xmlStr, 'application/xml');
+      if(doc.querySelector('parsererror')) { console.warn('parsererror', doc.querySelector('parsererror').textContent); return []; }
+      return Array.from(doc.querySelectorAll('item')).map(it=>{
+        const get = q => it.querySelector(q) ? it.querySelector(q).textContent : '';
+        let image='';
+        const m = it.querySelector('media\\:content, media\\:thumbnail');
+        if(m && m.getAttribute && m.getAttribute('url')) image = m.getAttribute('url');
+        if(!image){ const enc = it.querySelector('enclosure'); if(enc && enc.getAttribute) image = enc.getAttribute('url') || ''; }
+        if(!image){ const r = /<img[^>]+src=["']?([^"'>\s]+)["']?/i.exec(get('content\\:encoded')||get('description')||''); if(r) image = r[1]; }
+        return { title: get('title'), link: get('link')||get('guid'), content: get('content\\:encoded')||get('description'), pubDate: get('pubDate'), image };
+      });
+    }catch(e){ console.warn('parseRawRSS error', e); return []; }
   }
 
-  function parseRSS(xmlString){
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(xmlString, 'application/xml');
-    const nodeErr = doc.querySelector('parsererror');
-    if(nodeErr) {
-      console.warn('XML parsererror', nodeErr.textContent);
-      return [];
+  // try proxies in sequence for one feed
+  async function tryFetchFeed(url){
+    for(const p of proxies){
+      try{
+        const fetchUrl = p.url(url);
+        const res = await fetch(fetchUrl, {cache:'no-cache'});
+        if(!res.ok){ console.warn('proxy',p.name,'status',res.status); continue; }
+        if(p.type === 'raw'){
+          const txt = await res.text();
+          // if returned content is JSON with error, skip
+          if(txt && (txt.trim().startsWith('{') || txt.trim().startsWith('['))){
+            // some proxies may return JSON error; continue
+            try{ JSON.parse(txt); console.warn('raw proxy returned JSON - skipping', p.name); continue; }catch(e){}
+          }
+          const items = parseRawRSS(txt);
+          if(items.length) return items;
+        } else if(p.type === 'rss2json'){
+          const j = await res.json();
+          if(j && j.items && j.items.length){
+            // convert rss2json items to our shape
+            return j.items.map(it=>({
+              title: it.title,
+              link: it.link,
+              content: it.content || it.description || '',
+              pubDate: it.pubDate,
+              image: it.thumbnail || (it.enclosure && it.enclosure.link) || ''
+            }));
+          }
+        }
+      }catch(e){
+        console.warn('proxy',p.name,'failed',e);
+        continue;
+      }
     }
-    const items = Array.from(doc.querySelectorAll('item')).map(it => {
-      const title = it.querySelector('title') ? it.querySelector('title').textContent : '';
-      const link = it.querySelector('link') ? it.querySelector('link').textContent : (it.querySelector('guid') ? it.querySelector('guid').textContent : '#');
-      const description = it.querySelector('description') ? it.querySelector('description').textContent : '';
-      const contentEncoded = it.querySelector('content\\:encoded') ? it.querySelector('content\\:encoded').textContent : '';
-      const content = contentEncoded || description;
-      const pubDate = it.querySelector('pubDate') ? it.querySelector('pubDate').textContent : '';
-      let image = '';
-      const media = it.querySelector('media\\:content, media\\:thumbnail');
-      if(media && media.getAttribute && media.getAttribute('url')) image = media.getAttribute('url');
-      if(!image){
-        const encl = it.querySelector('enclosure');
-        if(encl && encl.getAttribute) image = encl.getAttribute('url') || '';
-      }
-      if(!image){
-        const m = /<img[^>]+src=["']?([^"'>\s]+)["']?/i.exec(content || description || '');
-        if(m) image = m[1];
-      }
-      return { title, link, content, description, pubDate, image };
-    });
-    return items;
+    throw new Error('All proxies failed');
   }
 
-  async function fetchText(url){
-    const res = await fetch(proxy(url));
-    if(!res.ok) throw new Error('Network response not ok: ' + res.status);
-    return await res.text();
-  }
-
-  function makeFeaturedCard(item){
-    const container = document.createElement('div');
-    container.className = 'gth-featured';
-
-    const imgWrap = document.createElement('div');
-    imgWrap.className = 'img';
-    const aImg = document.createElement('a');
-    aImg.href = item.link; aImg.target = '_blank'; aImg.rel = 'noopener noreferrer';
-    const img = document.createElement('img');
-    img.src = item.image || fallbackSvgDataUrl();
-    img.alt = item.title || 'thumbnail';
-    aImg.appendChild(img);
-    imgWrap.appendChild(aImg);
-
-    const meta = document.createElement('div');
-    meta.className = 'meta';
-    const headline = document.createElement('div');
-    headline.className = 'headline';
-    const aHead = document.createElement('a');
-    aHead.href = item.link; aHead.target = '_blank'; aHead.rel = 'noopener noreferrer';
-    aHead.style.textDecoration = 'none'; aHead.style.color = 'inherit';
-    aHead.textContent = item.title || '';
-    headline.appendChild(aHead);
-
-    const syn = document.createElement('div');
-    syn.className = 'syn';
-    syn.textContent = catchy(item.title || '', item.content || item.description || '');
-
-    const metaRow = document.createElement('div');
-    metaRow.className = 'meta-row';
-    const date = document.createElement('div');
-    date.textContent = item.pubDate ? new Date(item.pubDate).toLocaleString() : '';
-    const readWrap = document.createElement('div');
-    const readA = document.createElement('a');
-    readA.className = 'read';
-    readA.href = item.link; readA.target = '_blank'; readA.rel = 'noopener noreferrer';
-    readA.textContent = 'Read full';
-    readWrap.appendChild(readA);
-
-    metaRow.appendChild(date);
-    metaRow.appendChild(readWrap);
-
-    meta.appendChild(headline);
-    meta.appendChild(syn);
-    meta.appendChild(metaRow);
-
-    container.appendChild(imgWrap);
-    container.appendChild(meta);
-    return container;
-  }
-
-  function makeSmallCard(item){
-    const wrap = document.createElement('div');
-    wrap.className = 'gth-sm';
-
-    const thumb = document.createElement('div');
-    thumb.className = 'thumb';
-    const aThumb = document.createElement('a');
-    aThumb.href = item.link; aThumb.target = '_blank'; aThumb.rel = 'noopener noreferrer';
-    const img = document.createElement('img');
-    img.src = item.image || fallbackSvgDataUrl();
-    img.alt = item.title || 'thumb';
-    aThumb.appendChild(img);
-    thumb.appendChild(aThumb);
-
-    const info = document.createElement('div');
-    info.className = 'info';
-    const h = document.createElement('div');
-    h.className = 'h';
-    const aH = document.createElement('a');
-    aH.href = item.link; aH.target = '_blank'; aH.rel = 'noopener noreferrer';
-    aH.style.textDecoration = 'none'; aH.style.color = 'inherit';
-    aH.textContent = item.title || '';
-    h.appendChild(aH);
-
-    const s = document.createElement('div');
-    s.className = 's';
-    s.textContent = shortify(item.content || item.description || '', 110);
-
-    info.appendChild(h);
-    info.appendChild(s);
-
-    wrap.appendChild(thumb);
-    wrap.appendChild(info);
-    return wrap;
-  }
-
-  try{
+  async function loadAll(){
     loadingEl.textContent = 'Loading headlines…';
-    const [newsText, trendsText] = await Promise.all([ fetchText(newsRSS), fetchText(trendsRSS) ]);
-    const newsItems = parseRSS(newsText);
-    const trendsItems = parseRSS(trendsText);
+    try{
+      // fetch both feeds (news + trends) via same proxy attempts
+      const [newsItems, trendsItems] = await Promise.all([ tryFetchFeed(newsRSS), tryFetchFeed(trendsRSS) ]);
+      const items = (newsItems||[]).concat(trendsItems||[]);
+      if(!items.length) { contentEl.innerHTML = '<div class="gth-error">No items found (proxies returned no data).</div>'; return; }
+      items.sort((a,b)=>new Date(b.pubDate||0)-new Date(a.pubDate||0));
+      // render: featured + 4 small
+      const featured = items[0];
+      const smalls = items.slice(1, 1+smallCount);
 
-    const items = [];
-    // prefer news first then trends
-    for(const it of newsItems) items.push(it);
-    for(const it of trendsItems) items.push(it);
+      // build DOM
+      contentEl.innerHTML = '';
+      // featured
+      const fWrap = document.createElement('div'); fWrap.className='gth-featured';
+      const imgWrap = document.createElement('div'); imgWrap.className='img';
+      const aImg = document.createElement('a'); aImg.href = featured.link; aImg.target='_blank';
+      const img = document.createElement('img'); img.src = featured.image || fallbackSvgUrl(); img.alt = featured.title || '';
+      aImg.appendChild(img); imgWrap.appendChild(aImg);
+      const meta = document.createElement('div'); meta.className='meta';
+      const head = document.createElement('div'); head.className='headline';
+      const aHead = document.createElement('a'); aHead.href = featured.link; aHead.target='_blank'; aHead.style.textDecoration='none'; aHead.style.color='inherit'; aHead.textContent = featured.title || '';
+      head.appendChild(aHead);
+      const syn = document.createElement('div'); syn.className='syn'; syn.textContent = catchy(featured.title||'',featured.content||'');
+      const mr = document.createElement('div'); mr.className='meta-row';
+      const d = document.createElement('div'); d.textContent = featured.pubDate ? new Date(featured.pubDate).toLocaleString() : '';
+      const rd = document.createElement('div'); const aRead = document.createElement('a'); aRead.className='read'; aRead.href=featured.link; aRead.target='_blank'; aRead.textContent='Read full'; rd.appendChild(aRead);
+      mr.appendChild(d); mr.appendChild(rd);
+      meta.appendChild(head); meta.appendChild(syn); meta.appendChild(mr);
 
-    if(!items.length){
-      contentEl.innerHTML = '<div class="gth-error">No items found — try again later.</div>';
-      return;
+      fWrap.appendChild(imgWrap); fWrap.appendChild(meta);
+      contentEl.appendChild(fWrap);
+
+      const grid = document.createElement('div'); grid.className='gth-sm-grid';
+      for(const s of smalls){
+        const card = document.createElement('div'); card.className='gth-sm';
+        const th = document.createElement('div'); th.className='thumb';
+        const a = document.createElement('a'); a.href=s.link; a.target='_blank';
+        const im = document.createElement('img'); im.src = s.image || fallbackSvgUrl(); im.alt = s.title || '';
+        a.appendChild(im); th.appendChild(a);
+        const info = document.createElement('div'); info.className='info';
+        const h = document.createElement('div'); h.className='h';
+        const ah = document.createElement('a'); ah.href=s.link; ah.target='_blank'; ah.style.textDecoration='none'; ah.style.color='inherit'; ah.textContent=s.title||'';
+        h.appendChild(ah);
+        const ss = document.createElement('div'); ss.className='s'; ss.textContent = shortify(s.content||'',110);
+        info.appendChild(h); info.appendChild(ss);
+        card.appendChild(th); card.appendChild(info);
+        grid.appendChild(card);
+      }
+      contentEl.appendChild(grid);
+      const f = document.createElement('div'); f.className='gth-footer'; f.textContent='Powered by Google News & Trends';
+      contentEl.appendChild(f);
+
+    }catch(err){
+      console.error('All proxies failed:', err);
+      contentEl.innerHTML = [
+        '<div class="gth-error">Unable to fetch feeds from public proxies.</div>',
+        '<div style="padding:10px 12px;color:#444;font-size:13px">Solutions:',
+        '<ul style="margin:8px 0 0 18px"><li>Deploy a tiny serverless proxy (Netlify/Vercel) — recommended.</li>',
+        '<li>Try again later (public proxies sometimes limit requests).</li></ul></div>'
+      ].join('');
     }
-
-    items.sort((a,b) => (new Date(b.pubDate || 0) - new Date(a.pubDate || 0)));
-
-    // create DOM structure
-    contentEl.innerHTML = ''; // clear loading
-    const featured = items[0];
-    const smalls = items.slice(1, 1 + smallCount);
-
-    contentEl.appendChild(makeFeaturedCard(featured));
-
-    const grid = document.createElement('div');
-    grid.className = 'gth-sm-grid';
-    for(const s of smalls) grid.appendChild(makeSmallCard(s));
-    contentEl.appendChild(grid);
-
-    const footer = document.createElement('div');
-    footer.className = 'gth-footer';
-    footer.textContent = 'Powered by Google News & Trends';
-    contentEl.appendChild(footer);
-
-  }catch(err){
-    console.error('Widget load error:', err);
-    contentEl.innerHTML = '<div class="gth-error">Failed to load feeds (see console for details).</div>';
   }
+
+  loadAll();
 })();
 </script>
 </body>
